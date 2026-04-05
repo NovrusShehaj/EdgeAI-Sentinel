@@ -1,0 +1,61 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# EdgeAI Sentinel — Training Configuration
+# Modify these settings for your dataset and hardware
+# ──────────────────────────────────────────────────────────────────────────────
+
+model:
+  architecture: yolov8n          # yolov8n | yolov8s | yolov8m | yolov8l | yolov8x
+  pretrained: true               # Start from COCO pretrained weights
+  num_classes: 3                 # Adjust to your dataset
+
+dataset:
+  name: sentinel_dataset
+  path: data/                    # Root of your dataset directory
+  train: data/train/images
+  val: data/val/images
+  test: data/test/images
+  classes:
+    - person
+    - vehicle
+    - equipment
+
+training:
+  epochs: 100
+  batch_size: 16                 # Reduce to 8 if GPU VRAM < 8GB
+  image_size: 640
+  learning_rate: 0.01
+  momentum: 0.937
+  weight_decay: 0.0005
+  warmup_epochs: 3
+  optimizer: SGD                 # SGD | Adam | AdamW
+  patience: 20                   # Early stopping patience
+  save_period: 10                # Save checkpoint every N epochs
+  device: 0                      # GPU index, or "cpu" for CPU-only
+
+augmentation:
+  hsv_h: 0.015                   # Hue augmentation
+  hsv_s: 0.7                     # Saturation
+  hsv_v: 0.4                     # Value
+  degrees: 0.0                   # Rotation (degrees)
+  translate: 0.1
+  scale: 0.5
+  flipud: 0.0
+  fliplr: 0.5
+  mosaic: 1.0
+  mixup: 0.0
+
+export:
+  formats:
+    - onnx
+    - torchscript
+  onnx:
+    opset: 17
+    simplify: true
+    dynamic: false               # Static shapes for edge deployment
+  output_dir: models/
+
+logging:
+  project: edgeai-sentinel
+  name: exp
+  save_dir: runs/train/
+  verbose: true
