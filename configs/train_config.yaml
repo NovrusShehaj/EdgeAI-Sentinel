@@ -6,18 +6,19 @@
 model:
   architecture: yolov8n          # yolov8n | yolov8s | yolov8m | yolov8l | yolov8x
   pretrained: true               # Start from COCO pretrained weights
-  num_classes: 3                 # Adjust to your dataset
+  num_classes: 1                 # Adjust to your dataset
 
 dataset:
   name: sentinel_dataset
-  path: data/                    # Root of your dataset directory
-  train: data/train/images
-  val: data/val/images
-  test: data/test/images
+  #path: ../data                     # Root of your dataset directory
+  train: ../data/train/images
+  val: ../data/val/images
+  test: ../data/test/images
   classes:
-    - person
-    - vehicle
-    - equipment
+    - object
+    #- person
+    #- vehicle
+    #- equipment
 
 training:
   epochs: 100

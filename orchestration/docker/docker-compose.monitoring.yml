@@ -1,0 +1,79 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# EdgeAI Sentinel — Monitoring Stack
+# Brings up Prometheus + Grafana for observability
+#
+# Usage:
+#   docker-compose -f orchestration/docker/docker-compose.monitoring.yml up -d
+#
+# Access:
+#   Grafana:    http://localhost:3000  (admin / sentinel)
+#   Prometheus: http://localhost:9090
+# ──────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: sentinel-prometheus
+    volumes:
+      - ./../../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    restart: unless-stopped
+    networks:
+      - sentinel-monitoring
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: sentinel-grafana
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./../../monitoring/grafana:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: sentinel
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_LOG_LEVEL: warn
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - sentinel-monitoring
+
+  # Node exporter: system-level metrics from the host (CPU, RAM, disk, network)
+  node-exporter:
+    image: prom/node-exporter:v1.7.0
+    container_name: sentinel-node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+    networks:
+      - sentinel-monitoring
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  sentinel-monitoring:
+    driver: bridge

@@ -1,0 +1,66 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# EdgeAI Sentinel — Prometheus Scrape Configuration
+#
+# Collects metrics from:
+#   - Sentinel inference API (custom inference latency, throughput metrics)
+#   - Node exporter (CPU, RAM, disk, network)
+#   - Docker containers
+#
+# Update edge_device_ips list with your actual Raspberry Pi IP addresses.
+# ──────────────────────────────────────────────────────────────────────────────
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    project: "edgeai-sentinel"
+    environment: "edge"
+
+# ── Rule files ────────────────────────────────────────────────────────────────
+rule_files:
+  - "alert_rules.yml"
+
+# ── Scrape configurations ─────────────────────────────────────────────────────
+scrape_configs:
+
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Sentinel Inference API — custom AI/ML metrics
+  - job_name: "sentinel_edge"
+    scrape_interval: 10s
+    metrics_path: "/metrics"
+    static_configs:
+      - targets:
+          - "192.168.1.101:8080"   # pi-01 — replace with actual IPs
+          - "192.168.1.102:8080"   # pi-02
+        labels:
+          device_type: "raspberry_pi"
+          deployment: "edge_inference"
+
+  # Node Exporter — system metrics from each Pi
+  - job_name: "node_exporter_edge"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "192.168.1.101:9100"
+          - "192.168.1.102:9100"
+        labels:
+          device_type: "raspberry_pi"
+
+  # Local development machine (if running training locally)
+  - job_name: "node_exporter_local"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "node-exporter:9100"
+        labels:
+          device_type: "workstation"
+
+# ── Alerting ──────────────────────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []  # Add alertmanager address if configured

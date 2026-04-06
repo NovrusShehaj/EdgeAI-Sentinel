@@ -1,0 +1,167 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# EdgeAI Sentinel — Kubernetes / K3s Deployment Manifest
+#
+# Deploys the inference API as a DaemonSet so it runs on every edge node.
+# K3s is a lightweight Kubernetes distribution ideal for Raspberry Pi fleets.
+#
+# Install K3s on Pi:
+#   curl -sfL https://get.k3s.io | sh -
+#
+# Apply this manifest:
+#   kubectl apply -f orchestration/kubernetes/edge-daemonset.yml
+#
+# Demonstrates: "Familiarity with Kubernetes and container orchestration"
+# ──────────────────────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sentinel
+  labels:
+    app.kubernetes.io/part-of: edgeai-sentinel
+
+---
+# ConfigMap holds non-secret runtime configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sentinel-config
+  namespace: sentinel
+data:
+  CONF_THRESHOLD: "0.45"
+  IOU_THRESHOLD: "0.45"
+  NUM_THREADS: "4"
+  CLASS_NAMES: "person,vehicle,equipment"
+  PORT: "8080"
+
+---
+# PersistentVolumeClaim for model storage on each node
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sentinel-models
+  namespace: sentinel
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+  storageClassName: local-path   # K3s default local storage
+
+---
+# DaemonSet: run one inference pod on every labeled edge node
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: sentinel-inference
+  namespace: sentinel
+  labels:
+    app: sentinel-inference
+    app.kubernetes.io/part-of: edgeai-sentinel
+    app.kubernetes.io/component: inference
+spec:
+  selector:
+    matchLabels:
+      app: sentinel-inference
+
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+  template:
+    metadata:
+      labels:
+        app: sentinel-inference
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Only schedule on nodes labeled as edge inference nodes
+      # Label a node: kubectl label node pi-01 role=edge-inference
+      nodeSelector:
+        role: edge-inference
+
+      tolerations:
+        - key: "arm64"
+          operator: "Exists"
+          effect: "NoSchedule"
+
+      containers:
+        - name: sentinel
+          image: ghcr.io/yourusername/edgeai-sentinel/sentinel-edge:latest
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: sentinel-config
+
+          env:
+            - name: MODEL_PATH
+              value: /models/best.onnx
+
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+
+          # Resource limits — critical for Low-SWaP hardware
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "1500Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: sentinel-models
+
+      restartPolicy: Always
+
+---
+# Service: expose inference API within the cluster
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-service
+  namespace: sentinel
+  labels:
+    app: sentinel-inference
+spec:
+  type: NodePort
+  selector:
+    app: sentinel-inference
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080    # Accessible at <node-ip>:30080

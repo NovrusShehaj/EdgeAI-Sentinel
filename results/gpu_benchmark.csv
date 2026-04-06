@@ -1,0 +1,5 @@
+model,device,batch_size,image_size,throughput_imgs_per_sec,latency_mean_ms,latency_p50_ms,latency_p95_ms,latency_p99_ms,latency_std_ms,vram_peak_mb,vram_allocated_mb,gpu_name,cuda_version,num_warmup,num_iterations
+yolov8n,CPU (no CUDA),1,640,15.41,64.89,65.03,70.51,75.89,4.23,0.0,0.0,CPU (no CUDA),N/A,20,100
+yolov8n,CPU (no CUDA),4,640,18.1,221.01,220.72,232.84,238.2,6.84,0.0,0.0,CPU (no CUDA),N/A,20,100
+yolov8n,CPU (no CUDA),8,640,16.98,471.05,462.92,518.26,597.1,32.45,0.0,0.0,CPU (no CUDA),N/A,20,100
+yolov8n,CPU (no CUDA),16,640,16.49,970.11,958.8,1038.67,1140.73,46.75,0.0,0.0,CPU (no CUDA),N/A,20,100

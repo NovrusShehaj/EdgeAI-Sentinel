@@ -1,0 +1,229 @@
+---
+# ──────────────────────────────────────────────────────────────────────────────
+# EdgeAI Sentinel — Edge Fleet Deployment Playbook
+#
+# Automates:
+#   1. System setup (Docker, dependencies)
+#   2. Security hardening (firewall, non-root user)
+#   3. Model transfer to edge device
+#   4. Container deployment
+#   5. Prometheus scrape target registration
+#
+# Usage:
+#   ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.ini
+#   ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.ini --tags deploy
+#
+# Demonstrates: "Familiarity with Infrastructure Automation such as Ansible"
+# ──────────────────────────────────────────────────────────────────────────────
+
+- name: EdgeAI Sentinel — Edge Device Provisioning and Deployment
+  hosts: edge_devices
+  become: true
+  gather_facts: true
+
+  vars:
+    app_name: sentinel
+    app_dir: /opt/sentinel
+    model_dir: /opt/sentinel/models
+    container_image: sentinel-edge:latest
+    api_port: 8080
+    sentinel_user: sentinel
+    # Override at CLI: -e "conf_threshold=0.5"
+    conf_threshold: "0.45"
+    iou_threshold: "0.45"
+    num_threads: "4"
+
+  pre_tasks:
+    - name: Assert target is ARM64 or AMD64
+      assert:
+        that: ansible_architecture in ["aarch64", "x86_64"]
+        msg: "Unsupported architecture: {{ ansible_architecture }}"
+
+    - name: Print deployment target info
+      debug:
+        msg: |
+          Deploying to {{ inventory_hostname }}
+          OS:   {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Arch: {{ ansible_architecture }}
+          RAM:  {{ ansible_memtotal_mb }} MB
+
+  tasks:
+    # ── System Prerequisites ──────────────────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 3600
+      tags: [setup]
+
+    - name: Install required system packages
+      apt:
+        name:
+          - curl
+          - ca-certificates
+          - ufw
+          - python3-pip
+          - git
+        state: present
+      tags: [setup]
+
+    # ── Docker / OCI Runtime ──────────────────────────────────────────────────
+    - name: Install Docker via convenience script
+      shell: curl -fsSL https://get.docker.com | sh
+      args:
+        creates: /usr/bin/docker
+      tags: [setup, docker]
+
+    - name: Install containerd
+      apt:
+        name: containerd.io
+        state: present
+      tags: [setup, docker]
+
+    - name: Ensure Docker service is started and enabled
+      systemd:
+        name: docker
+        state: started
+        enabled: true
+      tags: [setup, docker]
+
+    # ── Security Hardening ────────────────────────────────────────────────────
+    - name: Create sentinel system user (non-root)
+      user:
+        name: "{{ sentinel_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        groups: docker
+        append: true
+        state: present
+      tags: [security]
+
+    - name: Configure UFW — deny all incoming by default
+      ufw:
+        state: enabled
+        default: deny
+        direction: incoming
+      tags: [security]
+
+    - name: Configure UFW — allow SSH
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+      tags: [security]
+
+    - name: Configure UFW — allow Sentinel API port
+      ufw:
+        rule: allow
+        port: "{{ api_port }}"
+        proto: tcp
+      tags: [security]
+
+    - name: Configure UFW — allow Prometheus metrics scrape
+      ufw:
+        rule: allow
+        port: "9100"
+        proto: tcp
+        src: "{{ monitoring_server_ip | default('any') }}"
+      tags: [security, monitoring]
+
+    # ── Application Setup ─────────────────────────────────────────────────────
+    - name: Create application directory
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ sentinel_user }}"
+        group: "{{ sentinel_user }}"
+        mode: "0755"
+      loop:
+        - "{{ app_dir }}"
+        - "{{ model_dir }}"
+        - "{{ app_dir }}/logs"
+      tags: [deploy]
+
+    - name: Transfer ONNX model to edge device
+      copy:
+        src: models/best.onnx
+        dest: "{{ model_dir }}/best.onnx"
+        owner: "{{ sentinel_user }}"
+        mode: "0644"
+      tags: [deploy, model]
+      notify: Restart sentinel container
+
+    # ── Container Deployment ──────────────────────────────────────────────────
+    - name: Pull latest Sentinel container image
+      docker_image:
+        name: "{{ container_image }}"
+        source: pull
+        state: present
+      ignore_errors: true  # Fall back to local build if registry unavailable
+      tags: [deploy]
+
+    - name: Deploy Sentinel inference container
+      docker_container:
+        name: "{{ app_name }}"
+        image: "{{ container_image }}"
+        state: started
+        restart_policy: unless-stopped
+        ports:
+          - "{{ api_port }}:8080"
+        volumes:
+          - "{{ model_dir }}:/app/models:ro"
+          - "{{ app_dir }}/logs:/app/logs"
+        env:
+          MODEL_PATH: "/app/models/best.onnx"
+          CONF_THRESHOLD: "{{ conf_threshold }}"
+          IOU_THRESHOLD: "{{ iou_threshold }}"
+          NUM_THREADS: "{{ num_threads }}"
+          PORT: "8080"
+        user: "{{ sentinel_user }}"
+        healthcheck:
+          test: ["CMD", "python", "-c",
+                 "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+          start_period: 60s
+      tags: [deploy]
+
+    # ── Monitoring Registration ───────────────────────────────────────────────
+    - name: Write Prometheus scrape target file
+      template:
+        src: templates/prometheus_target.yml.j2
+        dest: "{{ app_dir }}/prometheus_target.yml"
+        mode: "0644"
+      tags: [monitoring]
+
+    # ── Verification ──────────────────────────────────────────────────────────
+    - name: Wait for Sentinel API to become healthy
+      uri:
+        url: "http://{{ ansible_host }}:{{ api_port }}/health"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: health_response
+      retries: 6
+      delay: 10
+      until: health_response.status == 200
+      tags: [verify]
+
+    - name: Print API health status
+      debug:
+        msg: "{{ health_response.content | from_json }}"
+      tags: [verify]
+
+  handlers:
+    - name: Restart sentinel container
+      docker_container:
+        name: "{{ app_name }}"
+        state: started
+        restart: true
+
+
+# ── Inventory template (save as inventory.ini) ────────────────────────────────
+#
+# [edge_devices]
+# pi-01 ansible_host=192.168.1.101 ansible_user=pi ansible_ssh_private_key_file=~/.ssh/id_rsa
+# pi-02 ansible_host=192.168.1.102 ansible_user=pi ansible_ssh_private_key_file=~/.ssh/id_rsa
+#
+# [edge_devices:vars]
+# monitoring_server_ip=192.168.1.10
