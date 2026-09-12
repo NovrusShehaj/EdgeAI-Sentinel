@@ -1,48 +1,26 @@
-# ──────────────────────────────────────────────────────────────────────────────
 # EdgeAI Sentinel — Edge Device Container
-# Target: Raspberry Pi 4/5 (ARM64) or any OCI-compatible runtime
-#
-# Demonstrates:
-#   - Multi-stage build (minimize image size — critical for edge/Low-SWaP)
-#   - ARM64 cross-compilation support
-#   - OCI-compliant container (containerd, CRI-O, Docker compatible)
-#   - Non-root user for security (Lockheed cybersecurity requirement)
-# ──────────────────────────────────────────────────────────────────────────────
+# Target: Raspberry Pi 4/5 (ARM64) or any OCI-compatible runtime.
+# Models are not baked into the image. Mount a versioned ONNX artifact at runtime.
 
-# ── Stage 1: Build dependencies ───────────────────────────────────────────────
 FROM python:3.11-slim-bookworm AS builder
 
 WORKDIR /build
 
-# Install build tools (needed for some Python packages with C extensions)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-
-# Install only the packages needed for edge inference (subset of full requirements)
-RUN pip install --no-cache-dir --user \
-    onnxruntime==1.17.0 \
-    opencv-python-headless \
-    fastapi \
-    uvicorn[standard] \
-    prometheus-client \
-    psutil \
-    numpy \
-    pydantic
+COPY requirements-edge.txt constraints-edge.txt ./
+RUN pip install --no-cache-dir --prefix=/install -r requirements-edge.txt -c constraints-edge.txt
 
 
-# ── Stage 2: Runtime image ────────────────────────────────────────────────────
 FROM python:3.11-slim-bookworm AS runtime
 
-# Labels (OCI image spec)
 LABEL org.opencontainers.image.title="EdgeAI Sentinel Edge"
 LABEL org.opencontainers.image.description="Low-SWaP AI inference server"
-LABEL org.opencontainers.image.version="1.0.0"
+LABEL org.opencontainers.image.version="0.2.0"
 
-# Install only runtime system libraries (no build tools)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgomp1 \
@@ -51,36 +29,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy installed packages from builder stage
-COPY --from=builder /root/.local /root/.local
-
-# Copy application source
+COPY --from=builder /install /usr/local
 COPY edge/ ./edge/
-COPY models/ ./models/
+COPY configs/ ./configs/
 
-# Create non-root user (security best practice for deployed systems)
-RUN useradd --no-create-home --shell /bin/false sentinel && \
-    chown -R sentinel:sentinel /app
+RUN useradd --uid 1000 --no-create-home --shell /usr/sbin/nologin sentinel \
+    && mkdir -p /app/models /tmp \
+    && chown -R sentinel:sentinel /app
 
 USER sentinel
 
-# Environment configuration
 ENV MODEL_PATH=/app/models/best.onnx
-ENV CLASS_NAMES=person,vehicle,equipment
+ENV MODEL_MANIFEST_PATH=/app/models/model_manifest.json
+ENV CLASS_NAMES=object
 ENV CONF_THRESHOLD=0.45
 ENV IOU_THRESHOLD=0.45
 ENV NUM_THREADS=4
 ENV PORT=8080
 ENV PYTHONPATH=/app
-ENV PATH=/root/.local/bin:$PATH
+ENV PATH=/usr/local/bin:$PATH
+ENV INFER_TIMEOUT_S=5
+ENV MAX_UPLOAD_BYTES=5242880
+ENV MAX_IMAGE_SIDE=4096
+ENV ALLOWED_HOSTS=*
 
 EXPOSE 8080
 
-# Healthcheck — Kubernetes and containerd will use this
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
+# Liveness only: /ready is 503 until a model is mounted.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/live')"
 
-CMD ["uvicorn", "edge.api:app", \
+CMD ["python", "-m", "uvicorn", "edge.api:app", \
      "--host", "0.0.0.0", \
      "--port", "8080", \
      "--workers", "1", \

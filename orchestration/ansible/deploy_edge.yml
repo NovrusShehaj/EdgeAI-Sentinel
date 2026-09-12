@@ -1,20 +1,11 @@
 ---
-# ──────────────────────────────────────────────────────────────────────────────
-# EdgeAI Sentinel — Edge Fleet Deployment Playbook
-#
-# Automates:
-#   1. System setup (Docker, dependencies)
-#   2. Security hardening (firewall, non-root user)
-#   3. Model transfer to edge device
-#   4. Container deployment
-#   5. Prometheus scrape target registration
+# EdgeAI Sentinel — one-device provisioning and deployment.
 #
 # Usage:
-#   ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.ini
-#   ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.ini --tags deploy
+#   ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.local.ini
+#   ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.local.ini --tags deploy,verify
 #
-# Demonstrates: "Familiarity with Infrastructure Automation such as Ansible"
-# ──────────────────────────────────────────────────────────────────────────────
+# Real inventory stays out of Git. Copy inventory.ini.example to inventory.local.ini.
 
 - name: EdgeAI Sentinel — Edge Device Provisioning and Deployment
   hosts: edge_devices
@@ -25,75 +16,67 @@
     app_name: sentinel
     app_dir: /opt/sentinel
     model_dir: /opt/sentinel/models
-    container_image: sentinel-edge:latest
+    container_image: "{{ lookup('env', 'SENTINEL_IMAGE') | default('sentinel-edge:local', true) }}"
     api_port: 8080
     sentinel_user: sentinel
-    # Override at CLI: -e "conf_threshold=0.5"
+    class_names: object
     conf_threshold: "0.45"
     iou_threshold: "0.45"
     num_threads: "4"
+    infer_timeout_s: "5"
+    api_token: "{{ lookup('env', 'API_TOKEN') }}"
 
   pre_tasks:
     - name: Assert target is ARM64 or AMD64
-      assert:
+      ansible.builtin.assert:
         that: ansible_architecture in ["aarch64", "x86_64"]
         msg: "Unsupported architecture: {{ ansible_architecture }}"
 
+    - name: Require API token for deployment
+      ansible.builtin.assert:
+        that: api_token | length > 0
+        msg: "Set API_TOKEN in the environment before deploying"
+
     - name: Print deployment target info
-      debug:
+      ansible.builtin.debug:
         msg: |
           Deploying to {{ inventory_hostname }}
           OS:   {{ ansible_distribution }} {{ ansible_distribution_version }}
           Arch: {{ ansible_architecture }}
           RAM:  {{ ansible_memtotal_mb }} MB
+          Image: {{ container_image }}
 
   tasks:
-    # ── System Prerequisites ──────────────────────────────────────────────────
     - name: Update apt cache
-      apt:
+      ansible.builtin.apt:
         update_cache: true
         cache_valid_time: 3600
       tags: [setup]
 
     - name: Install required system packages
-      apt:
+      ansible.builtin.apt:
         name:
-          - curl
           - ca-certificates
           - ufw
           - python3-pip
+          - python3-docker
           - git
-        state: present
-      tags: [setup]
-
-    # ── Docker / OCI Runtime ──────────────────────────────────────────────────
-    - name: Install Docker via convenience script
-      shell: curl -fsSL https://get.docker.com | sh
-      args:
-        creates: /usr/bin/docker
-      tags: [setup, docker]
-
-    - name: Install containerd
-      apt:
-        name: containerd.io
+          - docker.io
         state: present
       tags: [setup, docker]
 
     - name: Ensure Docker service is started and enabled
-      systemd:
+      ansible.builtin.systemd:
         name: docker
         state: started
         enabled: true
       tags: [setup, docker]
 
-    # ── Security Hardening ────────────────────────────────────────────────────
-    - name: Create sentinel system user (non-root)
-      user:
+    - name: Create sentinel system user without Docker-group access
+      ansible.builtin.user:
         name: "{{ sentinel_user }}"
         system: true
         shell: /usr/sbin/nologin
-        groups: docker
-        append: true
         state: present
       tags: [security]
 
@@ -111,27 +94,19 @@
         proto: tcp
       tags: [security]
 
-    - name: Configure UFW — allow Sentinel API port
+    - name: Configure UFW — allow Sentinel API from monitoring network only
       ufw:
         rule: allow
         port: "{{ api_port }}"
         proto: tcp
+        src: "{{ monitoring_server_ip | default('127.0.0.1') }}"
       tags: [security]
 
-    - name: Configure UFW — allow Prometheus metrics scrape
-      ufw:
-        rule: allow
-        port: "9100"
-        proto: tcp
-        src: "{{ monitoring_server_ip | default('any') }}"
-      tags: [security, monitoring]
-
-    # ── Application Setup ─────────────────────────────────────────────────────
-    - name: Create application directory
-      file:
+    - name: Create application directories
+      ansible.builtin.file:
         path: "{{ item }}"
         state: directory
-        owner: "{{ sentinel_user }}"
+        owner: root
         group: "{{ sentinel_user }}"
         mode: "0755"
       loop:
@@ -140,22 +115,42 @@
         - "{{ app_dir }}/logs"
       tags: [deploy]
 
-    - name: Transfer ONNX model to edge device
-      copy:
-        src: models/best.onnx
-        dest: "{{ model_dir }}/best.onnx"
-        owner: "{{ sentinel_user }}"
+    - name: Transfer ONNX model when a local artifact is provided
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ model_dir }}/{{ item | basename }}"
+        owner: root
+        group: "{{ sentinel_user }}"
         mode: "0644"
+      loop: "{{ query('fileglob', 'models/*.onnx') + query('fileglob', 'models/model_manifest.json') }}"
+      when: item | length > 0
       tags: [deploy, model]
       notify: Restart sentinel container
 
-    # ── Container Deployment ──────────────────────────────────────────────────
-    - name: Pull latest Sentinel container image
+    - name: Inspect local container image
+      docker_image_info:
+        name: "{{ container_image }}"
+      register: local_image
+      tags: [deploy]
+
+    - name: Pull container image when it is not present locally
       docker_image:
         name: "{{ container_image }}"
         source: pull
         state: present
-      ignore_errors: true  # Fall back to local build if registry unavailable
+      when: local_image.images | length == 0
+      tags: [deploy]
+
+    - name: Confirm the container image is present
+      docker_image_info:
+        name: "{{ container_image }}"
+      register: acquired_image
+      tags: [deploy]
+
+    - name: Fail if the container image is still unavailable
+      ansible.builtin.assert:
+        that: acquired_image.images | length > 0
+        fail_msg: "Image {{ container_image }} is not available locally and could not be pulled"
       tags: [deploy]
 
     - name: Deploy Sentinel inference container
@@ -167,48 +162,65 @@
         ports:
           - "{{ api_port }}:8080"
         volumes:
-          - "{{ model_dir }}:/app/models:ro"
+          - "{{ model_dir }}:/app/models:ro,z"
           - "{{ app_dir }}/logs:/app/logs"
         env:
           MODEL_PATH: "/app/models/best.onnx"
+          MODEL_MANIFEST_PATH: "/app/models/model_manifest.json"
+          CLASS_NAMES: "{{ class_names }}"
           CONF_THRESHOLD: "{{ conf_threshold }}"
           IOU_THRESHOLD: "{{ iou_threshold }}"
           NUM_THREADS: "{{ num_threads }}"
+          INFER_TIMEOUT_S: "{{ infer_timeout_s }}"
+          API_TOKEN: "{{ api_token }}"
           PORT: "8080"
-        user: "{{ sentinel_user }}"
         healthcheck:
-          test: ["CMD", "python", "-c",
-                 "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+          test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/live')"]
           interval: 30s
           timeout: 10s
           retries: 3
-          start_period: 60s
+          start_period: 20s
       tags: [deploy]
 
-    # ── Monitoring Registration ───────────────────────────────────────────────
     - name: Write Prometheus scrape target file
-      template:
+      ansible.builtin.template:
         src: templates/prometheus_target.yml.j2
         dest: "{{ app_dir }}/prometheus_target.yml"
         mode: "0644"
       tags: [monitoring]
 
-    # ── Verification ──────────────────────────────────────────────────────────
-    - name: Wait for Sentinel API to become healthy
-      uri:
-        url: "http://{{ ansible_host }}:{{ api_port }}/health"
+    - name: Wait for process liveness
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ api_port }}/live"
+        method: GET
+        status_code: 200
+      retries: 6
+      delay: 5
+      tags: [verify]
+
+    - name: Wait for model readiness
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ api_port }}/ready"
         method: GET
         return_content: true
         status_code: 200
-      register: health_response
+      register: ready_response
       retries: 6
       delay: 10
-      until: health_response.status == 200
+      until: ready_response.status == 200
       tags: [verify]
 
-    - name: Print API health status
-      debug:
-        msg: "{{ health_response.content | from_json }}"
+    - name: Assert the loaded model is ready
+      ansible.builtin.assert:
+        that:
+          - (ready_response.content | from_json).ready | bool
+          - (ready_response.content | from_json).model_loaded | bool
+        fail_msg: "Sentinel reported not ready: {{ ready_response.content }}"
+      tags: [verify]
+
+    - name: Print readiness payload
+      ansible.builtin.debug:
+        msg: "{{ ready_response.content | from_json }}"
       tags: [verify]
 
   handlers:
@@ -217,13 +229,3 @@
         name: "{{ app_name }}"
         state: started
         restart: true
-
-
-# ── Inventory template (save as inventory.ini) ────────────────────────────────
-#
-# [edge_devices]
-# pi-01 ansible_host=192.168.1.101 ansible_user=pi ansible_ssh_private_key_file=~/.ssh/id_rsa
-# pi-02 ansible_host=192.168.1.102 ansible_user=pi ansible_ssh_private_key_file=~/.ssh/id_rsa
-#
-# [edge_devices:vars]
-# monitoring_server_ip=192.168.1.10

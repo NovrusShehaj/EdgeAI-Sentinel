@@ -1,0 +1,10 @@
+{
+  "status": "no_production_model",
+  "class_names": ["object"],
+  "dataset": "synthetic-smoke-only",
+  "note": "No trained ONNX artifact is shipped. Generate a CI/demo graph with scripts/generate_demo_onnx.py. Do not publish accuracy or Pi/GPU claims from synthetic runs.",
+  "measured_artifacts": [
+    "results/gpu_benchmark.json"
+  ],
+  "gpu_benchmark_device": "CPU (no CUDA)"
+}

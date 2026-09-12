@@ -1,0 +1,14 @@
+# Training and export extras. Not installed on edge devices.
+
+-c constraints-edge.txt
+-r requirements-edge.txt
+torch==2.2.2
+torchvision==0.17.2
+ultralytics==8.2.103
+onnx==1.22.0
+Pillow==10.4.0
+pandas==2.2.3
+matplotlib==3.9.2
+seaborn==0.13.2
+tabulate==0.9.0
+gputil==1.4.0

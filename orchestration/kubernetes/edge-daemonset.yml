@@ -1,17 +1,11 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# EdgeAI Sentinel — Kubernetes / K3s Deployment Manifest
+# EdgeAI Sentinel — single-node or per-node edge inference.
 #
-# Deploys the inference API as a DaemonSet so it runs on every edge node.
-# K3s is a lightweight Kubernetes distribution ideal for Raspberry Pi fleets.
+# Models live on each node at /opt/sentinel/models (hostPath). A single RWO PVC
+# is not used because it cannot mount on every DaemonSet node.
 #
-# Install K3s on Pi:
-#   curl -sfL https://get.k3s.io | sh -
-#
-# Apply this manifest:
+# Build and load locally:
+#   docker build -f orchestration/docker/Dockerfile.edge -t sentinel-edge:<git-sha> .
 #   kubectl apply -f orchestration/kubernetes/edge-daemonset.yml
-#
-# Demonstrates: "Familiarity with Kubernetes and container orchestration"
-# ──────────────────────────────────────────────────────────────────────────────
 
 ---
 apiVersion: v1
@@ -22,7 +16,6 @@ metadata:
     app.kubernetes.io/part-of: edgeai-sentinel
 
 ---
-# ConfigMap holds non-secret runtime configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -32,26 +25,16 @@ data:
   CONF_THRESHOLD: "0.45"
   IOU_THRESHOLD: "0.45"
   NUM_THREADS: "4"
-  CLASS_NAMES: "person,vehicle,equipment"
+  CLASS_NAMES: "object"
   PORT: "8080"
+  INFER_TIMEOUT_S: "5"
+  MAX_UPLOAD_BYTES: "5242880"
+  MAX_IMAGE_SIDE: "4096"
+  ALLOWED_HOSTS: "*"
+  MODEL_PATH: "/models/best.onnx"
+  MODEL_MANIFEST_PATH: "/models/model_manifest.json"
 
 ---
-# PersistentVolumeClaim for model storage on each node
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: sentinel-models
-  namespace: sentinel
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 500Mi
-  storageClassName: local-path   # K3s default local storage
-
----
-# DaemonSet: run one inference pod on every labeled edge node
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -65,12 +48,10 @@ spec:
   selector:
     matchLabels:
       app: sentinel-inference
-
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 1
-
   template:
     metadata:
       labels:
@@ -80,40 +61,42 @@ spec:
         prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
-      # Only schedule on nodes labeled as edge inference nodes
-      # Label a node: kubectl label node pi-01 role=edge-inference
       nodeSelector:
         role: edge-inference
-
       tolerations:
         - key: "arm64"
           operator: "Exists"
           effect: "NoSchedule"
-
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: sentinel
-          image: ghcr.io/yourusername/edgeai-sentinel/sentinel-edge:latest
-          imagePullPolicy: Always
-
+          image: sentinel-edge:local
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8080
               protocol: TCP
-
           envFrom:
             - configMapRef:
                 name: sentinel-config
-
           env:
-            - name: MODEL_PATH
-              value: /models/best.onnx
-
+            - name: API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: sentinel-api-token
+                  key: API_TOKEN
           volumeMounts:
             - name: models
               mountPath: /models
               readOnly: true
-
-          # Resource limits — critical for Low-SWaP hardware
+            - name: tmp
+              mountPath: /tmp
           resources:
             requests:
               cpu: "500m"
@@ -121,33 +104,39 @@ spec:
             limits:
               cpu: "2000m"
               memory: "1500Mi"
-
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           livenessProbe:
             httpGet:
-              path: /health
+              path: /live
               port: 8080
-            initialDelaySeconds: 60
+            initialDelaySeconds: 10
             periodSeconds: 30
-            timeoutSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
-
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8080
-            initialDelaySeconds: 30
+            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
-
+            failureThreshold: 3
       volumes:
         - name: models
-          persistentVolumeClaim:
-            claimName: sentinel-models
-
+          hostPath:
+            path: /opt/sentinel/models
+            type: Directory
+        - name: tmp
+          emptyDir: {}
       restartPolicy: Always
 
 ---
-# Service: expose inference API within the cluster
 apiVersion: v1
 kind: Service
 metadata:
@@ -164,4 +153,4 @@ spec:
       protocol: TCP
       port: 8080
       targetPort: 8080
-      nodePort: 30080    # Accessible at <node-ip>:30080
+      nodePort: 30080

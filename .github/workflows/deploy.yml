@@ -1,0 +1,55 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Container image tag to deploy (git SHA)
+        required: true
+      inventory_path:
+        description: Path to the private inventory file
+        default: inventory.local.ini
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  deploy:
+    name: Manual one-device deploy
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install Ansible
+        run: pip install ansible
+      - name: Require populated inventory
+        run: |
+          if [ ! -f "${{ inputs.inventory_path }}" ]; then
+            echo "Inventory ${{ inputs.inventory_path }} is not present. Store real hosts outside Git."
+            exit 1
+          fi
+          if ! grep -Eq 'ansible_host=' "${{ inputs.inventory_path }}"; then
+            echo "Inventory has no ansible_host entries."
+            exit 1
+          fi
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EDGE_SSH_KEY }}" > ~/.ssh/edge_key
+          chmod 600 ~/.ssh/edge_key
+      - name: Deploy with host-key checking enabled
+        env:
+          API_TOKEN: ${{ secrets.API_TOKEN }}
+          SENTINEL_IMAGE: sentinel-edge:${{ inputs.image_tag }}
+        run: |
+          ansible-playbook \
+            orchestration/ansible/deploy_edge.yml \
+            -i "${{ inputs.inventory_path }}" \
+            --private-key ~/.ssh/edge_key \
+            --tags deploy,verify

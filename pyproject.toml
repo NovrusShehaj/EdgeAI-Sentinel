@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edgeai-sentinel"
+version = "0.2.0"
+description = "Edge object-detection pipeline for train, export, infer, observe, and deploy"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Novrus Shehaj" }]
+dependencies = []
+
+[project.optional-dependencies]
+edge = [
+  "onnxruntime==1.17.3",
+  "opencv-python-headless==4.9.0.80",
+  "numpy==1.26.4",
+  "PyYAML==6.0.2",
+  "pydantic==2.10.4",
+  "fastapi==0.141.1",
+  "uvicorn[standard]==0.32.1",
+  "python-multipart==0.0.32",
+  "prometheus-client==0.21.1",
+  "psutil==6.1.1",
+  "starlette==1.6.0",
+]
+train = [
+  "edgeai-sentinel[edge]",
+  "torch==2.2.2",
+  "torchvision==0.17.2",
+  "ultralytics==8.2.103",
+  "onnx==1.22.0",
+  "Pillow==10.4.0",
+  "pandas==2.2.3",
+]
+dev = [
+  "edgeai-sentinel[edge]",
+  "onnx==1.22.0",
+  "pytest==9.0.3",
+  "pytest-asyncio==1.4.0",
+  "httpx==0.28.1",
+  "black==26.3.1",
+  "ruff==0.8.4",
+  "pip-audit==2.7.3",
+]
+
+[project.scripts]
+sentinel-infer = "edge.inference:main"
+sentinel-demo-onnx = "edge.demo_model:main"
+
+[tool.setuptools.packages.find]
+include = ["edge*", "training*", "benchmarks*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "training: tests that need the training extra (torch/ultralytics)",
+]
+addopts = ""
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["edge", "training", "scripts", "benchmarks"]
+combine-as-imports = false
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.File",
+  "fastapi.Form",
+  "fastapi.Header",
+  "fastapi.Query",
+  "Depends",
+  "File",
+  "Form",
+  "Header",
+  "Query",
+]

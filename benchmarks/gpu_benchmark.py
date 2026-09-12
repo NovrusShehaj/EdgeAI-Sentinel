@@ -25,7 +25,7 @@ import json
 import logging
 import time
 import warnings
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +43,7 @@ warnings.filterwarnings("ignore")
 @dataclass
 class BenchmarkResult:
     """Structured result for a single benchmark run."""
+
     model: str
     device: str
     batch_size: int
@@ -89,6 +90,7 @@ def get_gpu_info() -> dict:
 
     try:
         import GPUtil
+
         gpus = GPUtil.getGPUs()
         if gpus:
             info["driver_version"] = gpus[0].driver
@@ -190,6 +192,7 @@ def benchmark_model(
     model = YOLO(model_file)
     if device != "cpu":
         import torch as _torch
+
         model.to(_torch.device(device_label))
 
     results = []
@@ -230,9 +233,11 @@ def benchmark_model(
 
             # Pretty-print result row
             logger.info(f"  Throughput: {result.throughput_imgs_per_sec:.1f} img/s")
-            logger.info(f"  Latency:    {result.latency_mean_ms:.1f} ms mean  "
-                        f"| p95={result.latency_p95_ms:.1f} ms "
-                        f"| p99={result.latency_p99_ms:.1f} ms")
+            logger.info(
+                f"  Latency:    {result.latency_mean_ms:.1f} ms mean  "
+                f"| p95={result.latency_p95_ms:.1f} ms "
+                f"| p99={result.latency_p99_ms:.1f} ms"
+            )
             if peak_vram > 0:
                 logger.info(f"  VRAM peak:  {result.vram_peak_mb:.0f} MB")
 
@@ -241,6 +246,7 @@ def benchmark_model(
                 logger.warning(f"  OOM at batch_size={bs} — skipping")
                 if device != "cpu":
                     import torch as _torch
+
                     _torch.cuda.empty_cache()
             else:
                 logger.error(f"  Error at batch_size={bs}: {e}")
@@ -271,36 +277,55 @@ def print_summary_table(results: list[BenchmarkResult]) -> None:
     """Print a formatted comparison table to stdout."""
     try:
         from tabulate import tabulate
+
         rows = [
-            [r.model, r.batch_size, f"{r.throughput_imgs_per_sec:.1f}",
-             f"{r.latency_mean_ms:.1f}", f"{r.latency_p95_ms:.1f}",
-             f"{r.vram_peak_mb:.0f}"]
+            [
+                r.model,
+                r.batch_size,
+                f"{r.throughput_imgs_per_sec:.1f}",
+                f"{r.latency_mean_ms:.1f}",
+                f"{r.latency_p95_ms:.1f}",
+                f"{r.vram_peak_mb:.0f}",
+            ]
             for r in results
         ]
-        headers = ["Model", "Batch", "Throughput (img/s)", "Latency mean (ms)",
-                   "Latency p95 (ms)", "VRAM peak (MB)"]
+        headers = [
+            "Model",
+            "Batch",
+            "Throughput (img/s)",
+            "Latency mean (ms)",
+            "Latency p95 (ms)",
+            "VRAM peak (MB)",
+        ]
         print("\n" + tabulate(rows, headers=headers, tablefmt="rounded_outline"))
     except ImportError:
         for r in results:
-            print(f"{r.model} | bs={r.batch_size} | "
-                  f"{r.throughput_imgs_per_sec:.1f} img/s | "
-                  f"{r.latency_mean_ms:.1f} ms")
+            print(
+                f"{r.model} | bs={r.batch_size} | "
+                f"{r.throughput_imgs_per_sec:.1f} img/s | "
+                f"{r.latency_mean_ms:.1f} ms"
+            )
 
 
 def main():
     parser = argparse.ArgumentParser(description="EdgeAI Sentinel — GPU Benchmarking")
-    parser.add_argument("--model", type=str, default="yolov8n",
-                        help="Model to benchmark (yolov8n, yolov8s, ...)")
-    parser.add_argument("--batch-sizes", nargs="+", type=int,
-                        default=[1, 4, 8, 16],
-                        help="Batch sizes to benchmark")
+    parser.add_argument(
+        "--model", type=str, default="yolov8n", help="Model to benchmark (yolov8n, yolov8s, ...)"
+    )
+    parser.add_argument(
+        "--batch-sizes", nargs="+", type=int, default=[1, 4, 8, 16], help="Batch sizes to benchmark"
+    )
     parser.add_argument("--imgsz", type=int, default=640)
-    parser.add_argument("--device", type=str, default="auto",
-                        help="Device: auto | 0 | 1 | cpu")
-    parser.add_argument("--compare-models", action="store_true",
-                        help="Run across yolov8 n/s/m variants")
-    parser.add_argument("--output", type=str, default="results/gpu_benchmark",
-                        help="Output path (without extension)")
+    parser.add_argument("--device", type=str, default="auto", help="Device: auto | 0 | 1 | cpu")
+    parser.add_argument(
+        "--compare-models", action="store_true", help="Run across yolov8 n/s/m variants"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="results/gpu_benchmark",
+        help="Output path (without extension)",
+    )
     args = parser.parse_args()
 
     all_results = []

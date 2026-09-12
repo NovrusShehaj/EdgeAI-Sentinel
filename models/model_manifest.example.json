@@ -1,0 +1,12 @@
+{
+  "model_id": "example-not-for-production",
+  "version": "0.0.0",
+  "format": "onnx",
+  "filename": "best.onnx",
+  "class_names": ["object"],
+  "input_size": 640,
+  "sha256": "replace-with-sha256-of-the-onnx-file",
+  "source": "Replace with dataset revision, training seed, and export command",
+  "synthetic": true,
+  "not_for_production": true
+}

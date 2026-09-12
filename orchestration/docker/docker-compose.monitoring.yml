@@ -1,27 +1,37 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# EdgeAI Sentinel — Monitoring Stack
-# Brings up Prometheus + Grafana for observability
+# EdgeAI Sentinel — local monitoring stack.
 #
-# Usage:
-#   docker-compose -f orchestration/docker/docker-compose.monitoring.yml up -d
+# The default profile requires GRAFANA_ADMIN_PASSWORD and fails closed if
+# it is absent. Grafana, Prometheus, and node-exporter bind to localhost.
 #
-# Access:
-#   Grafana:    http://localhost:3000  (admin / sentinel)
-#   Prometheus: http://localhost:9090
-# ──────────────────────────────────────────────────────────────────────────────
-
-version: "3.9"
+#   export GRAFANA_ADMIN_PASSWORD='...'
+#   docker compose -f orchestration/docker/docker-compose.monitoring.yml up -d
+#
+# Compose interpolates the entire file before applying profiles, so the
+# optional with-api service cannot use required-variable syntax. It passes
+# through API_TOKEN with an empty fallback. Inference still returns 401 when
+# the token is empty; no token default is committed.
+#
+#   export API_TOKEN='...'
+#   docker compose -f orchestration/docker/docker-compose.monitoring.yml --profile with-api up -d
+#
+# Repository bind mounts use :ro,z. :ro keeps the mount read-only. :z is the
+# shared SELinux relabel so Fedora/RHEL can read host files. Docker ignores :z
+# when SELinux is not enabled. Do not add :z to node-exporter host-namespace
+# mounts (/proc, /sys, /).
+#
+# Alertmanager routing is not configured. Alerts are visible in Prometheus only.
 
 services:
-
   prometheus:
     image: prom/prometheus:v2.48.0
     container_name: sentinel-prometheus
     volumes:
-      - ./../../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../monitoring/prometheus:/etc/prometheus:ro,z
       - prometheus_data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -37,12 +47,12 @@ services:
     container_name: sentinel-grafana
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./../../monitoring/grafana:/etc/grafana/provisioning:ro
+      - ../../monitoring/grafana:/etc/grafana/provisioning:ro,z
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: sentinel
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in the environment}
       GF_PATHS_PROVISIONING: /etc/grafana/provisioning
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_LOG_LEVEL: warn
@@ -52,7 +62,6 @@ services:
     networks:
       - sentinel-monitoring
 
-  # Node exporter: system-level metrics from the host (CPU, RAM, disk, network)
   node-exporter:
     image: prom/node-exporter:v1.7.0
     container_name: sentinel-node-exporter
@@ -65,10 +74,30 @@ services:
       - "--path.sysfs=/host/sys"
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
     ports:
-      - "9100:9100"
+      - "127.0.0.1:9100:9100"
     restart: unless-stopped
     networks:
       - sentinel-monitoring
+
+  sentinel-api:
+    image: sentinel-edge:local
+    container_name: sentinel-api
+    profiles: ["with-api"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      MODEL_PATH: /app/models/best.onnx
+      MODEL_MANIFEST_PATH: /app/models/model_manifest.json
+      CLASS_NAMES: object
+      API_TOKEN: ${API_TOKEN:-}
+      ALLOWED_HOSTS: "*"
+    volumes:
+      - ${SENTINEL_MODEL_DIR:-../../models}:/app/models:ro,z
+    depends_on:
+      - prometheus
+    networks:
+      - sentinel-monitoring
+    restart: unless-stopped
 
 volumes:
   prometheus_data:

@@ -1,0 +1,12 @@
+# Development, test, and lint extras.
+
+-c constraints-edge.txt
+-r requirements-edge.txt
+onnx==1.22.0
+pytest==9.0.3
+pytest-asyncio==1.4.0
+httpx==0.28.1
+PyYAML==6.0.2
+black==26.3.1
+ruff==0.8.4
+pip-audit==2.7.3

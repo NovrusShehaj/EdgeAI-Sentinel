@@ -1,159 +1,217 @@
-"""
-tests/test_inference.py
-────────────────────────
-Unit and integration tests for the EdgeAI Sentinel inference engine.
+"""Unit tests for the ONNX inference engine."""
 
-Run with: pytest tests/ -v
-"""
+from __future__ import annotations
 
-import io
-import json
+import threading
+from unittest.mock import MagicMock
+
 import numpy as np
 import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from prometheus_client import generate_latest
 
+from edge.demo_model import write_yolo_constant_onnx
+from edge.inference import InferenceTimeout, ONNXInferenceEngine
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
-
-@pytest.fixture(scope="session")
-def dummy_onnx_model(tmp_path_factory):
-    """Create a minimal ONNX model for testing (no GPU / real weights needed)."""
-    tmp = tmp_path_factory.mktemp("models")
-    model_path = tmp / "test.onnx"
-
-    try:
-        import onnx
-        from onnx import helper, TensorProto
-
-        X = helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, 640, 640])
-        Y = helper.make_tensor_value_info("output0", TensorProto.FLOAT, [1, 84, 8400])
-        node = helper.make_node("Identity", ["images"], ["output0"])
-        graph = helper.make_graph([node], "test_model", [X], [Y])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
-        onnx.save(model, str(model_path))
-    except ImportError:
-        pytest.skip("onnx package not installed")
-
-    return str(model_path)
-
-
-@pytest.fixture
-def dummy_image():
-    """BGR image matching typical camera frame."""
-    return np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
-
-
-# ── Unit Tests: Inference Engine ─────────────────────────────────────────────
 
 class TestONNXInferenceEngine:
-
-    def test_engine_loads(self, dummy_onnx_model):
-        """Engine initializes without error given a valid model path."""
-        try:
-            from edge.inference import ONNXInferenceEngine
-        except ImportError:
-            pytest.skip("onnxruntime not installed")
-
+    def test_engine_loads(self, demo_onnx, isolated_registry):
         engine = ONNXInferenceEngine(
-            model_path=dummy_onnx_model,
-            class_names=["person", "vehicle"],
+            model_path=demo_onnx,
+            class_names=["object"],
             num_threads=1,
+            registry=isolated_registry,
         )
         assert engine is not None
+        assert engine.class_names == ["object"]
 
     def test_missing_model_raises(self):
-        """FileNotFoundError raised for nonexistent model path."""
-        try:
-            from edge.inference import ONNXInferenceEngine
-        except ImportError:
-            pytest.skip("onnxruntime not installed")
-
         with pytest.raises(FileNotFoundError):
+            ONNXInferenceEngine(model_path="/nonexistent/model.onnx", class_names=["object"])
+
+    def test_class_count_mismatch_fails(self, two_class_onnx, isolated_registry):
+        with pytest.raises(ValueError, match="does not match the model head"):
             ONNXInferenceEngine(
-                model_path="/nonexistent/model.onnx",
-                class_names=["person"],
+                model_path=two_class_onnx,
+                class_names=["object"],
+                num_threads=1,
+                registry=isolated_registry,
             )
 
-    def test_preprocess_output_shape(self, dummy_onnx_model, dummy_image):
-        """Preprocessed tensor has correct shape [1, 3, 640, 640]."""
-        try:
-            from edge.inference import ONNXInferenceEngine
-        except ImportError:
-            pytest.skip("onnxruntime not installed")
-
+    def test_preprocess_output_shape(self, demo_onnx, dummy_image, isolated_registry):
         engine = ONNXInferenceEngine(
-            model_path=dummy_onnx_model,
-            class_names=["person"],
+            model_path=demo_onnx,
+            class_names=["object"],
             num_threads=1,
+            registry=isolated_registry,
         )
-        blob, x_scale, y_scale = engine.preprocess(dummy_image)
-        assert blob.shape == (1, 3, 640, 640), f"Unexpected shape: {blob.shape}"
+        blob, transform = engine.preprocess(dummy_image)
+        assert blob.shape == (1, 3, 640, 640)
         assert blob.dtype == np.float32
-        assert 0.0 <= blob.min() and blob.max() <= 1.0, "Pixel values outside [0, 1]"
+        assert 0.0 <= blob.min() <= blob.max() <= 1.0
+        assert transform.orig_w == 640
+        assert transform.orig_h == 480
 
-    def test_preprocess_normalizes_pixels(self, dummy_onnx_model):
-        """Pixels are normalized to [0, 1]."""
-        try:
-            from edge.inference import ONNXInferenceEngine
-        except ImportError:
-            pytest.skip("onnxruntime not installed")
-
+    def test_preprocess_normalizes_pixels(self, demo_onnx, isolated_registry):
         engine = ONNXInferenceEngine(
-            model_path=dummy_onnx_model,
-            class_names=["person"],
+            model_path=demo_onnx,
+            class_names=["object"],
             num_threads=1,
+            registry=isolated_registry,
         )
-        # White image — should normalize to ~1.0
-        white_image = np.full((480, 640, 3), 255, dtype=np.uint8)
-        blob, _, _ = engine.preprocess(white_image)
-        assert abs(blob.max() - 1.0) < 0.01, "Max pixel should be ~1.0"
+        white = np.full((480, 640, 3), 255, dtype=np.uint8)
+        blob, _ = engine.preprocess(white)
+        assert abs(float(blob.max()) - 1.0) < 0.01
 
-    def test_infer_returns_result(self, dummy_onnx_model, dummy_image):
-        """infer() returns InferenceResult with expected fields."""
-        try:
-            from edge.inference import ONNXInferenceEngine, InferenceResult
-        except ImportError:
-            pytest.skip("onnxruntime not installed")
-
+    def test_infer_returns_known_class(self, demo_onnx, isolated_registry):
         engine = ONNXInferenceEngine(
-            model_path=dummy_onnx_model,
-            class_names=["person"],
+            model_path=demo_onnx,
+            class_names=["object"],
             num_threads=1,
-            conf_threshold=0.99,  # No detections from dummy model
+            conf_threshold=0.1,
+            registry=isolated_registry,
         )
-        result = engine.infer(dummy_image)
-
-        assert isinstance(result, InferenceResult)
+        image = np.zeros((640, 640, 3), dtype=np.uint8)
+        result = engine.infer(image)
         assert result.frame_id == 1
         assert result.inference_time_ms > 0
-        assert isinstance(result.detections, list)
-        assert result.image_shape == (480, 640)
+        assert result.image_shape == (640, 640)
+        assert result.detections
+        assert result.detections[0].class_name == "object"
+        assert result.detections[0].class_id == 0
 
-    def test_frame_id_increments(self, dummy_onnx_model, dummy_image):
-        """frame_id increments with each call."""
-        try:
-            from edge.inference import ONNXInferenceEngine
-        except ImportError:
-            pytest.skip("onnxruntime not installed")
-
+    def test_frame_id_increments(self, demo_onnx, dummy_image, isolated_registry):
         engine = ONNXInferenceEngine(
-            model_path=dummy_onnx_model,
-            class_names=["person"],
+            model_path=demo_onnx,
+            class_names=["object"],
             num_threads=1,
-            conf_threshold=0.99,
+            registry=isolated_registry,
         )
-        r1 = engine.infer(dummy_image)
-        r2 = engine.infer(dummy_image)
-        assert r2.frame_id == r1.frame_id + 1
+        first = engine.infer(dummy_image)
+        second = engine.infer(dummy_image)
+        assert second.frame_id == first.frame_id + 1
+
+    def test_two_engines_do_not_collide(self, demo_onnx):
+        first = ONNXInferenceEngine(
+            model_path=demo_onnx,
+            class_names=["object"],
+            num_threads=1,
+        )
+        second = ONNXInferenceEngine(
+            model_path=demo_onnx,
+            class_names=["object"],
+            num_threads=1,
+        )
+        image = np.zeros((64, 64, 3), dtype=np.uint8)
+        first.infer(image)
+        second.infer(image)
+        assert first.is_ready()
+        assert second.is_ready()
+
+    def test_timeout(self, demo_onnx, dummy_image, isolated_registry):
+        engine = ONNXInferenceEngine(
+            model_path=demo_onnx,
+            class_names=["object"],
+            num_threads=1,
+            timeout_s=0.01,
+            registry=isolated_registry,
+        )
+
+        def slow_run(*_args, **_kwargs):
+            import time
+
+            time.sleep(0.2)
+            return [np.zeros((1, 5, 1), dtype=np.float32)]
+
+        engine._run_session = slow_run
+        with pytest.raises(InferenceTimeout):
+            engine.infer(dummy_image)
+        output = generate_latest(isolated_registry).decode()
+        assert "sentinel_inferences_total" in output
+        assert 'status="timeout"' in output
+
+    def test_error_counter(self, demo_onnx, dummy_image, isolated_registry):
+        engine = ONNXInferenceEngine(
+            model_path=demo_onnx,
+            class_names=["object"],
+            num_threads=1,
+            registry=isolated_registry,
+        )
+        engine._run_session = MagicMock(side_effect=RuntimeError("boom"))
+        with pytest.raises(RuntimeError):
+            engine.infer(dummy_image)
+        output = generate_latest(isolated_registry).decode()
+        assert 'status="error"' in output
+
+    def test_concurrent_requests_are_serialized(self, demo_onnx, dummy_image, isolated_registry):
+        engine = ONNXInferenceEngine(
+            model_path=demo_onnx,
+            class_names=["object"],
+            num_threads=1,
+            registry=isolated_registry,
+        )
+        results = []
+        errors = []
+
+        def worker():
+            try:
+                results.append(engine.infer(dummy_image))
+            except Exception as exc:  # pragma: no cover - test failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert not errors
+        assert len(results) == 4
+        assert {item.frame_id for item in results} == {1, 2, 3, 4}
+
+    def test_unavailable_after_startup(self, demo_onnx, dummy_image, isolated_registry, tmp_path):
+        engine = ONNXInferenceEngine(
+            model_path=demo_onnx,
+            class_names=["object"],
+            num_threads=1,
+            registry=isolated_registry,
+        )
+        engine.model_path = tmp_path / "deleted.onnx"
+        with pytest.raises(RuntimeError, match="unavailable"):
+            engine.infer(dummy_image)
+        assert not engine.is_ready()
 
 
-# ── Unit Tests: Benchmark ─────────────────────────────────────────────────────
+class TestDemoOnnxFixture:
+    def test_demo_model_is_not_identity(self, demo_onnx):
+        import onnx
+
+        model = onnx.load(demo_onnx)
+        onnx.checker.check_model(model)
+        kinds = {node.op_type for node in model.graph.node}
+        assert "Identity" not in kinds
+        assert "Constant" in kinds
+        assert model.graph.output[0].type.tensor_type.shape.dim[1].dim_value == 5
+
+    def test_constant_model_roundtrip(self, tmp_path, isolated_registry):
+        path = tmp_path / "known.onnx"
+        write_yolo_constant_onnx(
+            path,
+            num_classes=1,
+            detections=((320.0, 320.0, 100.0, 80.0, 0.93, 0),),
+        )
+        engine = ONNXInferenceEngine(
+            model_path=str(path),
+            class_names=["object"],
+            num_threads=1,
+            conf_threshold=0.1,
+            registry=isolated_registry,
+        )
+        result = engine.infer(np.zeros((640, 640, 3), dtype=np.uint8))
+        assert result.detections[0].class_name == "object"
+        assert result.detections[0].x1 == pytest.approx(270.0, abs=0.5)
+
 
 class TestEdgeBenchmark:
-
     def test_get_device_info_returns_dict(self):
-        """Device info always returns a dict with required keys."""
         from benchmarks.edge_benchmark import get_device_info
 
         info = get_device_info()
@@ -163,114 +221,10 @@ class TestEdgeBenchmark:
         assert info["ram_total_gb"] > 0
 
     def test_estimate_power_bounds(self):
-        """Power estimate stays within reasonable range."""
         from benchmarks.edge_benchmark import estimate_power_watts
 
-        for util in [0, 50, 100]:
-            for is_pi in [True, False]:
+        for util in (0, 50, 100):
+            for is_pi in (True, False):
                 power = estimate_power_watts(util, is_pi)
-                assert power > 0, "Power should be positive"
-                assert power < 200, "Power estimate too high"
-
-
-# ── Integration Tests: API ────────────────────────────────────────────────────
-
-class TestAPI:
-
-    @pytest.fixture
-    def client(self, dummy_onnx_model, monkeypatch):
-        """Test client with mocked model path."""
-        try:
-            from fastapi.testclient import TestClient
-            from httpx import AsyncClient
-        except ImportError:
-            pytest.skip("fastapi/httpx not installed")
-
-        monkeypatch.setenv("MODEL_PATH", dummy_onnx_model)
-        monkeypatch.setenv("CLASS_NAMES", "person,vehicle")
-
-        try:
-            from edge.api import app
-            return TestClient(app)
-        except Exception:
-            pytest.skip("Could not create test client")
-
-    def test_health_endpoint(self, client):
-        """GET /health returns 200 with required fields."""
-        response = client.get("/health")
-        assert response.status_code == 200
-        data = response.json()
-        assert "status" in data
-        assert "model_loaded" in data
-        assert "uptime_seconds" in data
-
-    def test_infer_endpoint_with_valid_image(self, client):
-        """POST /infer with a valid PNG returns 200 and inference result."""
-        try:
-            import cv2
-        except ImportError:
-            pytest.skip("opencv not installed")
-
-        # Create a minimal valid PNG in memory
-        img = np.zeros((100, 100, 3), dtype=np.uint8)
-        success, buffer = cv2.imencode(".png", img)
-        assert success
-
-        response = client.post(
-            "/infer",
-            files={"file": ("test.png", io.BytesIO(buffer.tobytes()), "image/png")},
-        )
-        assert response.status_code in (200, 503)  # 503 if model failed to load in CI
-        if response.status_code == 200:
-            data = response.json()
-            assert "detections" in data
-            assert "inference_time_ms" in data
-            assert data["inference_time_ms"] > 0
-
-    def test_infer_endpoint_rejects_bad_type(self, client):
-        """POST /infer with unsupported file type returns 400."""
-        response = client.post(
-            "/infer",
-            files={"file": ("test.txt", io.BytesIO(b"not an image"), "text/plain")},
-        )
-        assert response.status_code == 400
-
-
-# ── Smoke Tests: Training utilities ───────────────────────────────────────────
-
-class TestTrainingUtils:
-
-    def test_load_config(self, tmp_path):
-        """load_config correctly parses a YAML file."""
-        import yaml
-        from training.train import load_config
-
-        config = {
-            "model": {"architecture": "yolov8n", "num_classes": 3, "pretrained": True},
-            "dataset": {"classes": ["a", "b", "c"], "train": "data/train",
-                        "val": "data/val", "name": "test"},
-            "training": {"epochs": 10, "batch_size": 2, "image_size": 640,
-                         "learning_rate": 0.01, "momentum": 0.937,
-                         "weight_decay": 0.0005, "warmup_epochs": 1,
-                         "optimizer": "SGD", "patience": 5, "save_period": 5,
-                         "device": "cpu"},
-            "augmentation": {"hsv_h": 0.015, "hsv_s": 0.7, "hsv_v": 0.4,
-                             "degrees": 0.0, "translate": 0.1, "scale": 0.5,
-                             "flipud": 0.0, "fliplr": 0.5, "mosaic": 1.0, "mixup": 0.0},
-            "logging": {"project": "test", "name": "exp", "save_dir": "runs/",
-                        "verbose": False},
-            "export": {"formats": ["onnx"], "onnx": {"opset": 17, "simplify": True,
-                       "dynamic": False}, "output_dir": "models/"},
-        }
-        cfg_file = tmp_path / "config.yaml"
-        with open(cfg_file, "w") as f:
-            yaml.dump(config, f)
-
-        loaded = load_config(str(cfg_file))
-        assert loaded["model"]["architecture"] == "yolov8n"
-        assert loaded["training"]["epochs"] == 10
-
-    def test_get_device_cpu_fallback(self):
-        """get_device returns 'cpu' when requested."""
-        from training.train import get_device
-        assert get_device("cpu") == "cpu"
+                assert power > 0
+                assert power < 200

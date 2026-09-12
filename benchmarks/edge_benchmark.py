@@ -22,12 +22,10 @@ Usage:
 import argparse
 import json
 import logging
-import subprocess
 import threading
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import psutil
@@ -43,6 +41,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EdgeBenchmarkResult:
     """Structured result for edge device inference benchmark."""
+
     model_path: str
     device_name: str
     num_threads: int
@@ -295,8 +294,10 @@ def benchmark_edge(
         results.append(result)
 
         logger.info(f"  FPS:          {result.throughput_fps:.1f}")
-        logger.info(f"  Latency mean: {result.latency_mean_ms:.1f} ms  "
-                    f"p95={result.latency_p95_ms:.1f} ms")
+        logger.info(
+            f"  Latency mean: {result.latency_mean_ms:.1f} ms  "
+            f"p95={result.latency_p95_ms:.1f} ms"
+        )
         logger.info(f"  RAM peak:     {result.ram_used_mb:.0f} MB")
         logger.info(f"  CPU avg:      {result.cpu_utilization_pct:.1f}%")
         if cpu_temp > 0:
@@ -308,18 +309,21 @@ def benchmark_edge(
 
 def main():
     parser = argparse.ArgumentParser(description="EdgeAI Sentinel — Edge Benchmark")
-    parser.add_argument("--model", type=str, default="models/best.onnx",
-                        help="Path to ONNX model")
-    parser.add_argument("--threads", nargs="+", type=int, default=[1, 2, 4],
-                        help="Thread counts to test")
+    parser.add_argument("--model", type=str, default="models/best.onnx", help="Path to ONNX model")
+    parser.add_argument(
+        "--threads", nargs="+", type=int, default=[1, 2, 4], help="Thread counts to test"
+    )
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--output", type=str, default="results/edge_benchmark.json")
     args = parser.parse_args()
 
     if not Path(args.model).exists():
-        logger.warning(f"Model not found: {args.model}")
-        logger.warning("Generating dummy ONNX model for demonstration...")
-        _generate_dummy_onnx(args.model)
+        logger.error("Model not found: %s", args.model)
+        logger.error(
+            "Generate a CI/demo YOLO-shaped graph with "
+            "python scripts/generate_demo_onnx.py — do not use an Identity graph."
+        )
+        raise SystemExit(1)
 
     results = benchmark_edge(
         model_path=args.model,
@@ -336,27 +340,10 @@ def main():
 
         # Recommend optimal thread count
         best = min(results, key=lambda r: r.latency_mean_ms)
-        logger.info(f"\nOptimal threads: {best.num_threads} "
-                    f"({best.latency_mean_ms:.1f} ms, {best.throughput_fps:.1f} FPS)")
-
-
-def _generate_dummy_onnx(output_path: str) -> None:
-    """Generate a minimal valid ONNX model for testing without a real checkpoint."""
-    try:
-        import onnx
-        from onnx import helper, TensorProto
-
-        X = helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, 640, 640])
-        Y = helper.make_tensor_value_info("output0", TensorProto.FLOAT, [1, 84, 8400])
-        identity = helper.make_node("Identity", ["images"], ["output0"])
-        graph = helper.make_graph([identity], "sentinel", [X], [Y])
-        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
-
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        onnx.save(model, output_path)
-        logger.info(f"Dummy ONNX model saved to {output_path}")
-    except ImportError:
-        logger.error("onnx package needed for dummy model. pip install onnx")
+        logger.info(
+            f"\nOptimal threads: {best.num_threads} "
+            f"({best.latency_mean_ms:.1f} ms, {best.throughput_fps:.1f} FPS)"
+        )
 
 
 if __name__ == "__main__":

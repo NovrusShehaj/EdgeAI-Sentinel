@@ -1,0 +1,64 @@
+# Virtual environments and packaging
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+test-results.xml
+
+# Local secrets and operator files
+.env
+.env.*
+!.env.monitoring.example
+!.env.example
+*.pem
+*.key
+id_rsa
+inventory.local.ini
+secrets/
+
+# Local models and generated images
+*.onnx
+*.pt
+*.engine
+*.torchscript
+models/*.onnx
+models/*.pt
+models/*.engine
+models/*.torchscript
+models/model_manifest.json
+data/**/*.jpg
+data/**/*.jpeg
+data/**/*.png
+data/**/*.bmp
+
+# Training artifacts
+runs/
+wandb/
+ultralytics/
+
+# Local Cursor session overrides (do not commit permission relaxations)
+.cursor/cli.json
+
+# OS and editor junk
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Misc local outputs
+*.log
+tmp/
+.cache/

@@ -1,0 +1,5 @@
+# Optional wrapper so kubeconform/kubectl can treat the directory as a root.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - edge-daemonset.yml

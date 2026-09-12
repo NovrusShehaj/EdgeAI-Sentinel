@@ -1,164 +1,162 @@
 # EdgeAI Sentinel
 
-**An end-to-end AI/ML pipeline demonstrating edge inference, GPU benchmarking, container orchestration, and infrastructure automation — built for Low-SWaP (Size, Weight, and Power) deployment environments.**
+Train, export, run, observe, and deploy a single-class object detector on one edge host.
+
+This repository is **pre-production engineering**, not a production detector. There is no shipped trained ONNX model and no real-world accuracy claim.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue)
 ![Docker](https://img.shields.io/badge/Docker-OCI-blue)
-![Ansible](https://img.shields.io/badge/Ansible-Automation-red)
 ![ONNX](https://img.shields.io/badge/ONNX-Runtime-purple)
-![Raspberry Pi](https://img.shields.io/badge/Edge-Raspberry%20Pi%204%2F5-green)
 
----
+## Current status
 
-## Overview
+- Classification: development / pre-production candidate for the software loop
+- Class contract: one class, `object`, from `configs/data.yaml`
+- Dataset in Git: synthetic labels only; images are generated locally
+- Model artifacts: mount or generate a versioned ONNX file at runtime
+- CI: `.github/workflows/ci.yml` (lint, tests, image build, scans)
+- Deploy: `.github/workflows/deploy.yml` is `workflow_dispatch` only
 
-EdgeAI Sentinel is a production-grade object detection system designed to simulate the kind of AI/ML infrastructure work done at enterprise AI factories. The project covers the full lifecycle of an AI model:
-
-1. **Training** — Fine-tune YOLOv8 on a custom dataset using GPU-accelerated PyTorch
-2. **Benchmarking** — Profile GPU memory, throughput, latency, and power consumption
-3. **Export** — Convert trained models to ONNX and TensorRT for edge deployment
-4. **Edge Deployment** — Run optimized inference on a Raspberry Pi (Low-SWaP platform)
-5. **Orchestration** — Automate fleet deployment with Ansible and Docker
-6. **Monitoring** — Track inference metrics with Prometheus + Grafana dashboards
-7. **CI/CD** — Automated MLOps pipeline via GitHub Actions / GitLab CI
-
----
-
-## Skills Demonstrated
-
-| Skill | Implementation |
-|---|---|
-| GPU / HPC Computing | CUDA profiling, memory benchmarking, PyTorch training loop |
-| Low-SWaP Edge Platforms | Raspberry Pi 4/5 inference with ONNX Runtime, power profiling |
-| OCI / Container Runtimes | Docker + containerd deployment manifests |
-| Kubernetes | K3s manifests for edge fleet orchestration |
-| Infrastructure Automation | Ansible playbooks for provisioning and deployment |
-| Python / Bash Scripting | Training, benchmarking, edge inference, and utility scripts |
-| Monitoring / Observability | Prometheus metrics + Grafana dashboard |
-| CI/CD MLOps | GitHub Actions pipeline for train → export → deploy |
-| Networking + Security | Firewall rules in Ansible, secure API endpoints |
-
----
-
-## Repository Structure
+## Repository layout
 
 ```
-edgeai-sentinel/
-├── training/              # Model training scripts (PyTorch / YOLOv8)
-│   ├── train.py           # Main training entry point
-│   ├── dataset.py         # Dataset loader and augmentation
-│   └── export.py          # ONNX and TensorRT export
-├── benchmarks/            # GPU and edge hardware benchmarking
-│   ├── gpu_benchmark.py   # CUDA profiling (throughput, memory, power)
-│   └── edge_benchmark.py  # Raspberry Pi inference benchmarking
-├── edge/                  # Edge device inference application
-│   ├── inference.py       # ONNX Runtime inference engine
-│   ├── camera.py          # Camera stream handler (OpenCV)
-│   └── api.py             # FastAPI inference server
-├── orchestration/
-│   ├── docker/            # Dockerfile for edge and training containers
-│   ├── ansible/           # Playbooks for fleet provisioning
-│   └── kubernetes/        # K3s manifests for edge cluster
-├── monitoring/
-│   ├── prometheus/        # Prometheus scrape configs
-│   └── grafana/           # Dashboard JSON exports
-├── scripts/               # Utility Bash scripts
-├── tests/                 # Unit and integration tests
-├── notebooks/             # Jupyter exploration notebooks
-├── docs/                  # Architecture docs and diagrams
-└── .github/workflows/     # CI/CD pipeline definitions
+EdgeAI-Sentinel/
+├── edge/                         # Inference engine and FastAPI server
+├── training/                     # YOLOv8 train/export helpers
+├── benchmarks/                   # GPU and edge benchmark scripts
+├── tests/                        # Unit and contract tests
+├── scripts/                      # Synthetic data and demo ONNX helpers
+├── configs/                      # Training and class configuration
+├── data/                         # Synthetic labels; images are generated
+├── models/                       # Runtime mount point (weights are not committed)
+├── monitoring/prometheus/        # Scrape config and alert rules
+├── monitoring/grafana/           # Provisioned datasource and dashboard
+├── orchestration/docker/         # Edge image and monitoring compose
+├── orchestration/ansible/        # One-device deploy playbook
+├── orchestration/kubernetes/     # DaemonSet with hostPath models
+├── results/                      # Measured artifacts only
+├── docs/                         # Operator notes
+└── .github/workflows/            # Active CI and manual deploy
 ```
 
----
+## Quick start
 
-## Quick Start
-
-### Prerequisites
-- Python 3.10+
-- Docker + containerd
-- NVIDIA GPU (optional, for training)
-- Ansible 2.14+
-
-### 1. Clone and set up environment
+Python 3.10+ is required. Docker is optional for the container path.
 
 ```bash
-git clone https://github.com/yourusername/edgeai-sentinel.git
-cd edgeai-sentinel
+git clone git@github.com:NovrusShehaj/EdgeAI-Sentinel.git
+cd EdgeAI-Sentinel
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e '.[dev]'
+# or: pip install -r requirements-dev.txt
 ```
 
-### 2. Train the model
+### 1. Generate a labeled demo ONNX graph (not a trained model)
 
 ```bash
-python training/train.py --config configs/train_config.yaml --epochs 50
+python scripts/generate_demo_onnx.py --output models/demo.onnx --manifest models/model_manifest.json
 ```
 
-### 3. Run GPU benchmark
+### 2. Run the API locally
 
 ```bash
-python benchmarks/gpu_benchmark.py --model yolov8n --batch-sizes 1 4 8 16
+export API_TOKEN='local-dev-token'
+export MODEL_PATH=models/demo.onnx
+export MODEL_MANIFEST_PATH=models/model_manifest.json
+export CLASS_NAMES=object
+python -m uvicorn edge.api:app --host 127.0.0.1 --port 8080 --workers 1
 ```
 
-### 4. Export to ONNX
+Check probes:
 
 ```bash
+curl -sS http://127.0.0.1:8080/live
+curl -sS http://127.0.0.1:8080/ready
+curl -sS -H "X-API-Token: $API_TOKEN" -F "file=@some.jpg" http://127.0.0.1:8080/infer
+```
+
+Without a model, `/live` is 200 and `/ready` is 503.
+
+### 3. Headless camera or video loop
+
+```bash
+python -m edge.inference --model models/demo.onnx --source video.mp4 --headless --classes object
+```
+
+Do not use `cv2.imshow` on a headless host.
+
+### 4. Tests
+
+```bash
+pytest tests/ -v --junitxml=test-results.xml -m "not training"
+ruff check edge training tests scripts benchmarks
+black --check edge training tests scripts benchmarks
+```
+
+### 5. Container
+
+```bash
+docker build -f orchestration/docker/Dockerfile.edge -t sentinel-edge:local .
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -e API_TOKEN="$API_TOKEN" \
+  -v "$PWD/models:/app/models:ro,z" \
+  --user 1000:1000 \
+  sentinel-edge:local
+```
+
+The image does not copy a Git `models/` tree. Mount an artifact or `/ready` stays 503. `:ro,z` keeps the mount read-only and applies Docker's shared SELinux label. Docker ignores `:z` when SELinux is not enabled; on Fedora/RHEL, plain `:ro` is denied.
+
+### 6. Monitoring (localhost only)
+
+```bash
+export GRAFANA_ADMIN_PASSWORD='choose-a-local-password'
+docker compose -f orchestration/docker/docker-compose.monitoring.yml up -d
+```
+
+Compose exits if `GRAFANA_ADMIN_PASSWORD` is unset. The default stack does not require `API_TOKEN`. Grafana is `http://127.0.0.1:3000`. Alertmanager routing is not configured. Prometheus, Grafana, and the optional API model bind mounts use `:ro,z` so SELinux hosts can read repository files; Docker ignores `:z` without SELinux.
+
+Optional API sidecar (`--profile with-api`) still rejects inference when `API_TOKEN` is empty; set a non-empty token in the environment. No token is committed.
+
+```bash
+export API_TOKEN='local-dev-token'
+docker compose -f orchestration/docker/docker-compose.monitoring.yml --profile with-api up -d
+```
+
+## Training and data
+
+`python scripts/test_data.py` writes **synthetic** white rectangles for CI and short CPU smoke training. It is not a production dataset.
+
+```bash
+python scripts/test_data.py
+python training/train.py --config configs/train_config.yaml --epochs 1 --device cpu
 python training/export.py --checkpoint runs/train/exp/weights/best.pt --format onnx
 ```
 
-### 5. Deploy to edge device
+Do not publish mAP, FPS, or power numbers unless they come from a measured file in `results/` with hardware and software tags.
+
+The committed `results/gpu_benchmark.json` is **CPU-only** Ultralytics `yolov8n` timing. Raspberry Pi and RTX 3060 figures are not present and are not claimed.
+
+## Deployment
+
+One-device Ansible deployment is repository-ready and **externally unverified** until a real host and inventory exist.
 
 ```bash
-# Using Ansible
-ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.ini
-
-# Or manually on the Raspberry Pi
-python edge/inference.py --model models/best.onnx --source 0
+cp inventory.ini.example inventory.local.ini
+export API_TOKEN='...'
+export SENTINEL_IMAGE=sentinel-edge:local
+ansible-playbook orchestration/ansible/deploy_edge.yml -i inventory.local.ini --tags deploy,verify
 ```
 
-### 6. Launch monitoring stack
+Kubernetes uses a per-node hostPath at `/opt/sentinel/models`, `/live` for liveness, and `/ready` for readiness. Create `sentinel-api-token` before apply. See `docs/deployment.md`.
 
-```bash
-docker-compose -f orchestration/docker/docker-compose.monitoring.yml up -d
-# Access Grafana at http://localhost:3000
-```
+## Security notes
 
----
-
-## Hardware Reference
-
-| Platform | Use Case | Notes |
-|---|---|---|
-| NVIDIA GPU (RTX 3060+) | Model training, TensorRT export | CUDA 11.8+ required |
-| Raspberry Pi 4 (8GB) | Edge inference, API server | ARM64, ~3W idle |
-| Raspberry Pi 5 (8GB) | Faster edge inference | ~4W idle, faster NPU |
-| USB Camera / Pi Camera | Video input stream | OpenCV compatible |
-
----
-
-## Results
-
-Sample benchmark results (Raspberry Pi 4B, 8GB, YOLOv8n ONNX):
-
-| Metric | Value |
-|---|---|
-| Inference latency (avg) | 142 ms/frame |
-| Throughput | 7.0 FPS |
-| Peak RAM | 380 MB |
-| CPU utilization | 68% |
-| Power draw (estimated) | 4.2W |
-
-GPU training results (RTX 3060, batch=16):
-
-| Metric | Value |
-|---|---|
-| Training throughput | 82 images/sec |
-| GPU memory (peak) | 6.4 GB |
-| mAP@0.5 (COCO val) | 0.532 |
-| Export (ONNX) | ✅ |
-
----
+- `/infer` requires `X-API-Token` or `Authorization: Bearer`
+- Uploads are capped by `MAX_UPLOAD_BYTES` and `MAX_IMAGE_SIDE`
+- `/metrics` allows a token or private/loopback CIDRs
+- Do not expose port 8080 to the public Internet without TLS
+- No Grafana password is stored in Git
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT. See [LICENSE](LICENSE).

@@ -1,0 +1,7 @@
+- targets:
+    - "{{ ansible_host | default(inventory_hostname) }}:{{ api_port }}"
+  labels:
+    instance: "{{ inventory_hostname }}"
+    job: sentinel_edge
+    device_type: edge
+    image: "{{ container_image }}"

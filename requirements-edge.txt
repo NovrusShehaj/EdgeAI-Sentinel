@@ -1,0 +1,15 @@
+# Runtime dependencies for the edge API and ONNX inference path.
+# Install with: pip install -r requirements-edge.txt -c constraints-edge.txt
+
+-c constraints-edge.txt
+onnxruntime==1.17.3
+opencv-python-headless==4.9.0.80
+numpy==1.26.4
+PyYAML==6.0.2
+pydantic==2.10.4
+fastapi==0.141.1
+uvicorn[standard]==0.32.1
+python-multipart==0.0.32
+prometheus-client==0.21.1
+psutil==6.1.1
+starlette==1.6.0

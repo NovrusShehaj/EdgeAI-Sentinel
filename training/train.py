@@ -178,21 +178,22 @@ def train(cfg: dict, overrides: dict) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="EdgeAI Sentinel — YOLOv8 Training")
-    parser.add_argument("--config", type=str, default="configs/train_config.yaml",
-                        help="Path to training config YAML")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/train_config.yaml",
+        help="Path to training config YAML",
+    )
     parser.add_argument("--epochs", type=int, help="Override number of training epochs")
-    parser.add_argument("--batch-size", type=int, dest="batch_size",
-                        help="Override batch size")
+    parser.add_argument("--batch-size", type=int, dest="batch_size", help="Override batch size")
     parser.add_argument("--device", type=str, help="Override device (0, 1, cpu)")
-    parser.add_argument("--lr", type=float, dest="learning_rate",
-                        help="Override learning rate")
+    parser.add_argument("--lr", type=float, dest="learning_rate", help="Override learning rate")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
 
     # Collect CLI overrides (non-None values only)
-    overrides = {k: v for k, v in vars(args).items()
-                 if k not in ("config",) and v is not None}
+    overrides = {k: v for k, v in vars(args).items() if k not in ("config",) and v is not None}
 
     train(cfg, overrides)
 

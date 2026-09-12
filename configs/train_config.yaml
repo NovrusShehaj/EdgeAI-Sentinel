@@ -6,10 +6,10 @@
 model:
   architecture: yolov8n          # yolov8n | yolov8s | yolov8m | yolov8l | yolov8x
   pretrained: true               # Start from COCO pretrained weights
-  num_classes: 1                 # Adjust to your dataset
+  num_classes: 1                 # Must match configs/data.yaml (object)
 
 dataset:
-  name: sentinel_dataset
+  name: sentinel_synthetic_smoke
   #path: ../data                     # Root of your dataset directory
   train: ../data/train/images
   val: ../data/val/images

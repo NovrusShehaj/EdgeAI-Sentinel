@@ -43,7 +43,7 @@ def export_onnx(model, output_dir: Path, imgsz: int, opset: int, simplify: bool)
         imgsz=imgsz,
         opset=opset,
         simplify=simplify,
-        dynamic=False,          # Static shapes = predictable edge latency
+        dynamic=False,  # Static shapes = predictable edge latency
     )
 
     # Copy exported file to output directory
@@ -144,38 +144,55 @@ def _validate_onnx(onnx_path: Path) -> None:
 
 
 def print_model_info(checkpoint_path: Path) -> None:
-    """Display model size and parameter count."""
+    """Display model size. Avoid untrusted pickle deserialization."""
+    size_mb = checkpoint_path.stat().st_size / 1e6
+    logger.info(f"Checkpoint size: {size_mb:.1f} MB")
     try:
         import torch
 
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        if "model" in checkpoint:
-            state = checkpoint["model"].float().state_dict()
-            params = sum(p.numel() for p in state.values())
-            logger.info(f"Model parameters: {params:,}")
-        size_mb = checkpoint_path.stat().st_size / 1e6
-        logger.info(f"Checkpoint size: {size_mb:.1f} MB")
-    except Exception as e:
-        logger.warning(f"Could not read model info: {e}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+        if isinstance(checkpoint, dict):
+            tensors = [value for value in checkpoint.values() if hasattr(value, "numel")]
+            if tensors:
+                params = sum(int(value.numel()) for value in tensors)
+                logger.info(f"Tensor parameters in checkpoint: {params:,}")
+    except TypeError:
+        logger.info("Skipping pickle inspection; this PyTorch build does not support weights_only")
+    except Exception as exc:
+        logger.info(
+            "Skipping pickle inspection; use Ultralytics YOLO() for trusted checkpoints (%s)",
+            exc,
+        )
 
 
 def main():
     parser = argparse.ArgumentParser(description="EdgeAI Sentinel — Model Export")
-    parser.add_argument("--checkpoint", type=str, required=True,
-                        help="Path to trained .pt checkpoint")
-    parser.add_argument("--format", nargs="+", default=["onnx"],
-                        choices=["onnx", "torchscript", "trt"],
-                        help="Export format(s)")
-    parser.add_argument("--imgsz", type=int, default=640,
-                        help="Input image size (must match training size)")
-    parser.add_argument("--output-dir", type=str, default="models/",
-                        help="Directory to save exported models")
-    parser.add_argument("--opset", type=int, default=17,
-                        help="ONNX opset version")
-    parser.add_argument("--simplify", action="store_true", default=True,
-                        help="Run onnx-simplifier on exported graph")
-    parser.add_argument("--fp16", action="store_true",
-                        help="Use FP16 quantization for TensorRT export")
+    parser.add_argument(
+        "--checkpoint", type=str, required=True, help="Path to trained .pt checkpoint"
+    )
+    parser.add_argument(
+        "--format",
+        nargs="+",
+        default=["onnx"],
+        choices=["onnx", "torchscript", "trt"],
+        help="Export format(s)",
+    )
+    parser.add_argument(
+        "--imgsz", type=int, default=640, help="Input image size (must match training size)"
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default="models/", help="Directory to save exported models"
+    )
+    parser.add_argument("--opset", type=int, default=17, help="ONNX opset version")
+    parser.add_argument(
+        "--simplify",
+        action="store_true",
+        default=True,
+        help="Run onnx-simplifier on exported graph",
+    )
+    parser.add_argument(
+        "--fp16", action="store_true", help="Use FP16 quantization for TensorRT export"
+    )
     args = parser.parse_args()
 
     checkpoint = Path(args.checkpoint)
@@ -199,8 +216,7 @@ def main():
     exported = {}
     for fmt in args.format:
         if fmt == "onnx":
-            exported["onnx"] = export_onnx(model, output_dir, args.imgsz,
-                                            args.opset, args.simplify)
+            exported["onnx"] = export_onnx(model, output_dir, args.imgsz, args.opset, args.simplify)
         elif fmt == "torchscript":
             exported["torchscript"] = export_torchscript(model, output_dir, args.imgsz)
         elif fmt == "trt":
