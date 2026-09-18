@@ -63,12 +63,33 @@ def test_compose_keeps_api_token_optional_at_interpolation():
     assert "API_TOKEN: replace-me" not in text
 
 
+_COMPOSE_AVAILABLE: bool | None = None
+
+
+def _docker_compose_available(docker: str) -> bool:
+    """Check (and cache) that the docker CLI has a working compose plugin."""
+    global _COMPOSE_AVAILABLE
+    if _COMPOSE_AVAILABLE is None:
+        try:
+            probe = subprocess.run(
+                [docker, "compose", "version"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            _COMPOSE_AVAILABLE = probe.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            _COMPOSE_AVAILABLE = False
+    return _COMPOSE_AVAILABLE
+
+
 def _compose_config(
     *args: str, extra_env: dict[str, str | None]
 ) -> subprocess.CompletedProcess[str]:
     docker = shutil.which("docker")
-    if docker is None:
-        pytest.skip("docker is not available")
+    if docker is None or not _docker_compose_available(docker):
+        pytest.skip("docker compose is not available")
     env = os.environ.copy()
     for key, value in extra_env.items():
         if value is None:
